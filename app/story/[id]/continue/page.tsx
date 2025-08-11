@@ -187,14 +187,29 @@ export default function ContinueStoryPage() {
             try {
               while (true) {
                 const { done, value } = await reader.read()
-                if (done) break
+                if (done) {
+                  // Handle stream completion
+                  console.log("SSE stream completed")
+                  if (isGenerating) {
+                    // If we're still in generating state, finalize the content
+                    if (streamingContent) {
+                      setGeneratedContent(streamingContent)
+                      setStreamingContent("")
+                    }
+                    setStreamingStatus("Chapter complete!")
+                    setIsGenerating(false)
+                  }
+                  break
+                }
 
                 const chunk = decoder.decode(value, { stream: true })
                 const lines = chunk.split("\n")
 
+                let currentEvent = "text" // default event type
+
                 for (const line of lines) {
                   if (line.startsWith("event:")) {
-                    const event = line.substring(6).trim()
+                    currentEvent = line.substring(6).trim()
                     continue
                   }
 
@@ -203,7 +218,7 @@ export default function ContinueStoryPage() {
                     if (data) {
                       try {
                         const parsed = JSON.parse(data)
-                        handleSSEEvent(event || "text", parsed)
+                        handleSSEEvent(currentEvent, parsed)
                       } catch (e) {
                         console.warn("Failed to parse SSE data:", data)
                       }
@@ -214,6 +229,17 @@ export default function ContinueStoryPage() {
             } catch (error) {
               console.error("Stream processing error:", error)
               handleSSEError(error)
+            } finally {
+              // Cleanup: ensure we're not in generating state
+              if (isGenerating) {
+                console.log("Cleaning up SSE stream")
+                setIsGenerating(false)
+                if (streamingContent) {
+                  setGeneratedContent(streamingContent)
+                  setStreamingContent("")
+                  setStreamingStatus("Chapter complete!")
+                }
+              }
             }
           }
 
@@ -245,10 +271,12 @@ export default function ContinueStoryPage() {
         break
 
       case "complete":
-        setGeneratedContent(data.fullContent || "")
+        console.log("Received complete event")
+        setGeneratedContent(data.fullContent || streamingContent || "")
         setStreamingContent("")
         setStreamingStatus("Chapter complete!")
         setIsGenerating(false)
+        // Clean up any event source
         if (eventSource) {
           eventSource.close()
           setEventSource(null)
@@ -260,13 +288,21 @@ export default function ContinueStoryPage() {
         if (data.fallback) {
           setGeneratedContent(data.fallback)
           setStreamingContent("")
+        } else if (streamingContent) {
+          // Use whatever content we have so far
+          setGeneratedContent(streamingContent)
+          setStreamingContent("")
         }
-        setStreamingStatus("Error occurred, using fallback content")
+        setStreamingStatus("Error occurred, using available content")
         setIsGenerating(false)
         if (eventSource) {
           eventSource.close()
           setEventSource(null)
         }
+        break
+
+      default:
+        console.log(`Unhandled SSE event: ${event}`, data)
         break
     }
   }
