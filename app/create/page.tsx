@@ -1,8 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { ArrowLeft, Sparkles, Wand2, AlertCircle } from "lucide-react"
+import { ArrowLeft, Sparkles, Wand2, AlertCircle, Globe } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -12,10 +12,24 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import Link from "next/link"
 
+const SUPPORTED_LANGUAGES = [
+  { code: "en", name: "English", nativeName: "English" },
+  { code: "es", name: "Spanish", nativeName: "Español" },
+  { code: "fr", name: "French", nativeName: "Français" },
+  { code: "de", name: "German", nativeName: "Deutsch" },
+  { code: "it", name: "Italian", nativeName: "Italiano" },
+  { code: "pt", name: "Portuguese", nativeName: "Português" },
+  { code: "ru", name: "Russian", nativeName: "Русский" },
+  { code: "ja", name: "Japanese", nativeName: "日本語" },
+  { code: "ko", name: "Korean", nativeName: "한국어" },
+  { code: "zh", name: "Chinese", nativeName: "中文" },
+]
+
 export default function CreateStoryPage() {
   const router = useRouter()
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selectedLanguage, setSelectedLanguage] = useState("en")
   const [storyParams, setStoryParams] = useState({
     genre: "",
     characters: "",
@@ -46,6 +60,14 @@ export default function CreateStoryPage() {
     "from-teal-400 to-blue-400",
   ]
 
+  useEffect(() => {
+    // Load language settings
+    const savedLanguage = localStorage.getItem("storybook-language")
+    if (savedLanguage) {
+      setSelectedLanguage(savedLanguage)
+    }
+  }, [])
+
   const handleCreateStory = async () => {
     if (!storyParams.genre || !storyParams.characters || !storyParams.setting) {
       setError("Please fill in all required fields (Genre, Characters, and Setting)")
@@ -65,7 +87,10 @@ export default function CreateStoryPage() {
         const titleResponse = await fetch("/api/generate-title", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(storyParams),
+          body: JSON.stringify({
+            ...storyParams,
+            language: selectedLanguage,
+          }),
         })
 
         if (titleResponse.ok) {
@@ -95,6 +120,7 @@ export default function CreateStoryPage() {
         chapters: [],
         createdAt: new Date().toISOString().split("T")[0],
         coverColor: coverColors[Math.floor(Math.random() * coverColors.length)],
+        language: selectedLanguage, // Store the selected language
       }
 
       // Save to localStorage
@@ -119,6 +145,8 @@ export default function CreateStoryPage() {
       setIsGenerating(false)
     }
   }
+
+  const currentLanguage = SUPPORTED_LANGUAGES.find((lang) => lang.code === selectedLanguage)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
@@ -145,7 +173,8 @@ export default function CreateStoryPage() {
             Create Your AI Story
           </h1>
           <p className="text-xl text-gray-600 max-w-2xl mx-auto">
-            Tell us about your story preferences, and our AI will craft a personalized tale just for you.
+            Tell us about your story preferences and choose your language. Our AI will craft a personalized tale just
+            for you.
           </p>
         </div>
 
@@ -164,7 +193,7 @@ export default function CreateStoryPage() {
             </CardTitle>
             <CardDescription>
               Provide details about your story. The app works with or without AI - you can always write chapters
-              manually.
+              manually. Stories will be generated in {currentLanguage?.name || "English"}.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -200,6 +229,26 @@ export default function CreateStoryPage() {
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="language">Story Language</Label>
+              <Select value={selectedLanguage} onValueChange={setSelectedLanguage}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select language..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {SUPPORTED_LANGUAGES.map((language) => (
+                    <SelectItem key={language.code} value={language.code}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{language.name}</span>
+                        <span className="text-sm text-gray-500">({language.nativeName})</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="text-xs text-gray-500">AI will generate story content in the selected language</div>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="setting">Setting *</Label>
               <Input
                 id="setting"
@@ -230,6 +279,16 @@ export default function CreateStoryPage() {
               />
             </div>
 
+            {selectedLanguage !== "en" && (
+              <Alert className="bg-blue-50 border-blue-200">
+                <Globe className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Language:</strong> Your story will be generated in {currentLanguage?.name} (
+                  {currentLanguage?.nativeName}). AI generation quality may vary for non-English languages.
+                </AlertDescription>
+              </Alert>
+            )}
+
             <div className="pt-4">
               <Button
                 onClick={handleCreateStory}
@@ -257,7 +316,11 @@ export default function CreateStoryPage() {
                 <Link href="/settings" className="text-purple-600 hover:underline">
                   Set it up in settings
                 </Link>{" "}
-                or continue with manual writing.
+                or continue with manual writing. Change language in{" "}
+                <Link href="/settings" className="text-purple-600 hover:underline">
+                  settings
+                </Link>
+                .
               </p>
             </div>
           </CardContent>

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Sparkles, BookOpen, Edit, Wand2, FileText, Zap, Clock, Square } from "lucide-react"
+import { ArrowLeft, Sparkles, BookOpen, Edit, Wand2, FileText, Zap, Clock, Square, Globe } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
@@ -22,6 +22,7 @@ interface Story {
   chapters: Chapter[]
   createdAt: string
   coverColor: string
+  language: string
 }
 
 interface Chapter {
@@ -35,6 +36,19 @@ interface StreamingEvent {
   event: string
   data: any
 }
+
+const SUPPORTED_LANGUAGES = [
+  { code: "en", name: "English", nativeName: "English" },
+  { code: "es", name: "Spanish", nativeName: "Español" },
+  { code: "fr", name: "French", nativeName: "Français" },
+  { code: "de", name: "German", nativeName: "Deutsch" },
+  { code: "it", name: "Italian", nativeName: "Italiano" },
+  { code: "pt", name: "Portuguese", nativeName: "Português" },
+  { code: "ru", name: "Russian", nativeName: "Русский" },
+  { code: "ja", name: "Japanese", nativeName: "日本語" },
+  { code: "ko", name: "Korean", nativeName: "한국어" },
+  { code: "zh", name: "Chinese", nativeName: "中文" },
+]
 
 export default function ContinueStoryPage() {
   const params = useParams()
@@ -50,17 +64,14 @@ export default function ContinueStoryPage() {
   const [isPreviewMode, setIsPreviewMode] = useState(false)
   const [streamingStatus, setStreamingStatus] = useState<string>("")
   const [eventSource, setEventSource] = useState<EventSource | null>(null)
-  const [streamingStats, setStreamingStats] = useState({
-    startTime: null as Date | null,
-    wordsPerMinute: 0,
-    estimatedTimeRemaining: 0,
-  })
+  const [selectedLanguage, setSelectedLanguage] = useState("en")
 
   useEffect(() => {
     const savedStories = localStorage.getItem("ai-storybook-stories")
+    let foundStory: Story | null = null
     if (savedStories) {
       const stories: Story[] = JSON.parse(savedStories)
-      const foundStory = stories.find((s) => s.id === params.id)
+      foundStory = stories.find((s) => s.id === params.id)
       if (foundStory) {
         setStory(foundStory)
         // Set default prompt for next chapter
@@ -79,6 +90,11 @@ export default function ContinueStoryPage() {
       }
     } else {
       router.push("/")
+    }
+
+    // Load language from story
+    if (foundStory && foundStory.language) {
+      setSelectedLanguage(foundStory.language)
     }
 
     // Check AI availability
@@ -100,21 +116,7 @@ export default function ContinueStoryPage() {
       .split(/\s+/)
       .filter((word) => word.length > 0)
     setWordCount(words.length)
-
-    // Calculate streaming stats
-    if (isGenerating && streamingStats.startTime && words.length > 0) {
-      const elapsed = (Date.now() - streamingStats.startTime.getTime()) / 1000 / 60 // minutes
-      const wpm = Math.round(words.length / elapsed)
-      const estimatedTotal = 400 // estimated total words
-      const remaining = Math.max(0, (estimatedTotal - words.length) / Math.max(wpm, 1))
-
-      setStreamingStats((prev) => ({
-        ...prev,
-        wordsPerMinute: wpm,
-        estimatedTimeRemaining: remaining,
-      }))
-    }
-  }, [generatedContent, streamingContent, isGenerating, streamingStats.startTime])
+  }, [generatedContent, streamingContent, isGenerating])
 
   const checkAIStatus = async () => {
     try {
@@ -132,12 +134,7 @@ export default function ContinueStoryPage() {
     setIsGenerating(true)
     setGeneratedContent("")
     setStreamingContent("")
-    setStreamingStatus("Initializing...")
-    setStreamingStats({
-      startTime: new Date(),
-      wordsPerMinute: 0,
-      estimatedTimeRemaining: 0,
-    })
+    setStreamingStatus("Connecting to AI...")
 
     try {
       const nextChapterNum = story.chapters.length + 1
@@ -154,15 +151,11 @@ export default function ContinueStoryPage() {
           story.setting,
           story.genre,
           chapterPrompt,
+          selectedLanguage,
         )
         await simulateSSEStreaming(templateContent)
         return
       }
-
-      // Create SSE connection
-      const eventSourceUrl = new URL("/api/generate-story-stream", window.location.origin)
-      const eventSourceInstance = new EventSource(eventSourceUrl)
-      setEventSource(eventSourceInstance)
 
       // Send the request data via POST to start streaming
       fetch("/api/generate-story", {
@@ -175,6 +168,7 @@ export default function ContinueStoryPage() {
           setting: story.setting,
           chapterNumber: nextChapterNum,
           previousChapters: previousChapters,
+          language: selectedLanguage, // Include language in the request
         }),
       })
         .then((response) => {
@@ -242,19 +236,18 @@ export default function ContinueStoryPage() {
         break
 
       case "start":
-        setStreamingStatus("AI is analyzing your story context...")
+        setStreamingStatus("AI is analyzing your story...")
         break
 
       case "text":
         setStreamingContent(data.fullContent || "")
-        setWordCount(data.wordCount || 0)
-        setStreamingStatus(`Generating chapter... ${data.wordCount || 0} words`)
+        setStreamingStatus("Writing your chapter...")
         break
 
       case "complete":
         setGeneratedContent(data.fullContent || "")
         setStreamingContent("")
-        setStreamingStatus("Chapter generation complete!")
+        setStreamingStatus("Chapter complete!")
         setIsGenerating(false)
         if (eventSource) {
           eventSource.close()
@@ -290,6 +283,7 @@ export default function ContinueStoryPage() {
         story.setting,
         story.genre,
         chapterPrompt,
+        selectedLanguage,
       )
       await simulateSSEStreaming(templateContent)
     }
@@ -297,7 +291,7 @@ export default function ContinueStoryPage() {
 
   // Simulate SSE streaming for fallback content
   const simulateSSEStreaming = async (content: string) => {
-    setStreamingStatus("Using template generation...")
+    setStreamingStatus("Generating template...")
     setStreamingContent("")
 
     const words = content.split(" ")
@@ -306,7 +300,7 @@ export default function ContinueStoryPage() {
     for (let i = 0; i < words.length; i++) {
       currentContent += (i > 0 ? " " : "") + words[i]
       setStreamingContent(currentContent)
-      setStreamingStatus(`Generating template... ${i + 1}/${words.length} words`)
+      setStreamingStatus("Writing your chapter...")
 
       // Simulate realistic typing speed
       await new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 100))
@@ -314,7 +308,7 @@ export default function ContinueStoryPage() {
 
     setGeneratedContent(content)
     setStreamingContent("")
-    setStreamingStatus("Template generation complete!")
+    setStreamingStatus("Chapter complete!")
     setIsGenerating(false)
   }
 
@@ -334,54 +328,53 @@ export default function ContinueStoryPage() {
     setting: string,
     genre: string,
     prompt?: string,
+    language = "en",
   ): string => {
+    // This would be expanded with more language templates
     const isFirstChapter = chapterNumber === 1
 
-    if (isFirstChapter) {
-      return `# Chapter ${chapterNumber}: The Beginning
+    if (language === "es") {
+      return isFirstChapter
+        ? `# Capítulo ${chapterNumber}: El Comienzo
 
-**${characters}** stood at the threshold of *${setting}*, their hearts racing with anticipation. This was the moment that would change everything - the beginning of their extraordinary ${genre.toLowerCase()} adventure.
+**${characters}** se encontraba en el umbral de *${setting}*, con el corazón acelerado por la expectación...
 
-## The Journey Begins
-
-The air around them seemed charged with possibility. Every shadow held mystery, every sound carried the promise of discovery. They had heard stories about this place, whispered tales that spoke of wonders and dangers in equal measure.
-
-> "Are you ready for this?" one of them asked, their voice barely audible above the ambient sounds of ${setting}.
-
-The others exchanged glances, each seeing their own mixture of excitement and apprehension reflected in their companions' eyes. They had come too far to turn back now.
-
-**"We've prepared for this moment our entire lives,"** came the determined reply. **"Whatever lies ahead, we'll face it together."**
-
-As they took their first steps forward, the very air seemed to shimmer with magic and possibility. Their ${genre.toLowerCase()} journey was about to begin, and none of them could imagine where it would lead.
-
-${prompt ? `\n### Story Direction\n*${prompt}*` : ""}
+${prompt ? `\n### Dirección de la Historia\n*${prompt}*` : ""}
 
 ---
 
-*This is a template chapter. Edit this content to match your vision, or enable DeepSeek AI in settings for automated generation.*`
-    } else {
-      return `# Chapter ${chapterNumber}: The Adventure Continues
+*Este es un capítulo de plantilla. Edita este contenido para que coincida con tu visión, o habilita las funciones de DeepSeek AI en configuración para generación automática.*`
+        : `# Capítulo ${chapterNumber}: La Aventura Continúa
 
-The journey of **${characters}** through *${setting}* had taken unexpected turns, each more thrilling than the last. What had begun as a simple quest had evolved into something far more complex and meaningful.
+El viaje de **${characters}** a través de *${setting}* había tomado giros inesperados...
 
-## New Developments
-
-${prompt ? `Following their current path - *${prompt.toLowerCase()}* - they found themselves` : "They found themselves"} facing challenges that tested not only their skills but their very understanding of the world around them.
-
-The ${genre.toLowerCase()} elements of their story continued to unfold in surprising ways. Ancient mysteries revealed themselves slowly, relationships deepened through shared trials, and the true scope of their adventure became clearer with each passing day.
-
-> "Look how far we've come," one of them said, pausing to gaze back at the path they had traveled.
-
-> "And yet," another replied thoughtfully, "I have the feeling our greatest challenges still lie ahead."
-
-The wind carried whispers of distant places and untold stories, reminding them that their adventure was far from over. Each step forward brought new revelations, new allies, and new mysteries to unravel.
-
-${prompt ? `\n### Story Direction\n*${prompt}*` : ""}
+${prompt ? `\n### Dirección de la Historia\n*${prompt}*` : ""}
 
 ---
 
-*This is a template chapter. Edit this content to match your vision, or enable DeepSeek AI in settings for automated generation.*`
+*Este es un capítulo de plantilla. Edita este contenido para que coincida con tu visión, o habilita las funciones de DeepSeek AI en configuración para generación automática.*`
     }
+
+    // Default English template
+    return isFirstChapter
+      ? `# Chapter ${chapterNumber}: The Beginning
+
+**${characters}** stood at the threshold of *${setting}*, their hearts racing with anticipation...
+
+${prompt ? `\n### Story Direction\n*${prompt}*` : ""}
+
+---
+
+*This is a template chapter. Edit this content to match your vision, or enable DeepSeek AI in settings for automated generation.*`
+      : `# Chapter ${chapterNumber}: The Adventure Continues
+
+The journey of **${characters}** through *${setting}* had taken unexpected turns...
+
+${prompt ? `\n### Story Direction\n*${prompt}*` : ""}
+
+---
+
+*This is a template chapter. Edit this content to match your vision, or enable DeepSeek AI in settings for automated generation.*`
   }
 
   const createManualChapter = () => {
@@ -452,6 +445,7 @@ Use markdown to format your text and make it more engaging for readers.`
 
   const estimatedReadTime = Math.ceil(wordCount / 200) // Average reading speed
   const currentContent = isGenerating ? streamingContent : generatedContent
+  const currentLanguage = SUPPORTED_LANGUAGES.find((lang) => lang.code === selectedLanguage)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
@@ -510,16 +504,24 @@ Use markdown to format your text and make it more engaging for readers.`
                       </>
                     )}
                   </CardTitle>
-                  {aiAvailable && (
-                    <Badge variant="secondary" className="bg-green-100 text-green-700 border-green-200">
-                      <Zap className="h-3 w-3 mr-1" />
-                      DeepSeek AI
-                    </Badge>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {aiAvailable && (
+                      <Badge variant="secondary" className="bg-green-100 text-green-700 border-green-200">
+                        <Zap className="h-3 w-3 mr-1" />
+                        DeepSeek AI
+                      </Badge>
+                    )}
+                    {currentLanguage && (
+                      <Badge variant="outline" className="text-xs">
+                        <Globe className="h-3 w-3 mr-1" />
+                        {currentLanguage.nativeName}
+                      </Badge>
+                    )}
+                  </div>
                 </div>
                 <CardDescription className="text-sm">
                   {aiAvailable
-                    ? "Describe your chapter direction and watch AI craft your story in real-time."
+                    ? `Generate chapters in ${currentLanguage?.name || "English"} for this story.`
                     : "Create your next chapter manually or enable AI features for automated generation."}
                 </CardDescription>
               </CardHeader>
@@ -566,16 +568,7 @@ Use markdown to format your text and make it more engaging for readers.`
                         </div>
                         <div className="text-xs text-gray-600">
                           <span>{streamingStatus}</span>
-                          <span className="float-right">{wordCount} words</span>
                         </div>
-
-                        {/* Streaming Stats */}
-                        {streamingStats.wordsPerMinute > 0 && (
-                          <div className="grid grid-cols-2 gap-2 text-xs text-gray-500">
-                            <div>Speed: {streamingStats.wordsPerMinute} WPM</div>
-                            <div>ETA: {Math.round(streamingStats.estimatedTimeRemaining)}m</div>
-                          </div>
-                        )}
                       </div>
                     )}
 
@@ -641,6 +634,9 @@ Use markdown to format your text and make it more engaging for readers.`
                         <span className="font-medium">Theme:</span> {story.theme}
                       </p>
                     )}
+                    <p>
+                      <span className="font-medium">Language:</span> {currentLanguage?.name || "English"}
+                    </p>
                     <p>
                       <span className="font-medium">Previous Chapters:</span> {story.chapters.length}
                     </p>
@@ -851,12 +847,13 @@ Horizontal lines for scene breaks"
                     <h3 className="text-lg font-semibold text-gray-900 mb-2">Ready to Create</h3>
                     <p className="text-gray-600 max-w-md mx-auto mb-4">
                       {aiAvailable
-                        ? "Use the AI generator to watch your chapter being written in real-time."
+                        ? `Use the AI generator to create stories in ${currentLanguage?.name || "English"}.`
                         : "Click 'Write Chapter Manually' to start creating your next chapter."}
                     </p>
                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 max-w-md mx-auto">
                       <p className="text-sm text-amber-800">
-                        💡 <strong>Pro tip:</strong> Experience real-time streaming as your story comes to life!
+                        💡 <strong>Pro tip:</strong> Experience real-time streaming as your story comes to life in your
+                        chosen language!
                       </p>
                     </div>
                   </div>

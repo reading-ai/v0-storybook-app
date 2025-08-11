@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Plus, BookOpen, ChevronLeft, ChevronRight } from "lucide-react"
+import { ArrowLeft, Plus, BookOpen, ChevronLeft, ChevronRight, Globe } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import ReactMarkdown from "react-markdown"
@@ -18,6 +18,7 @@ interface Story {
   chapters: Chapter[]
   createdAt: string
   coverColor: string
+  language?: string
 }
 
 interface Chapter {
@@ -26,6 +27,19 @@ interface Chapter {
   content: string
   chapterNumber: number
 }
+
+const SUPPORTED_LANGUAGES = [
+  { code: "en", name: "English", nativeName: "English" },
+  { code: "es", name: "Spanish", nativeName: "Español" },
+  { code: "fr", name: "French", nativeName: "Français" },
+  { code: "de", name: "German", nativeName: "Deutsch" },
+  { code: "it", name: "Italian", nativeName: "Italiano" },
+  { code: "pt", name: "Portuguese", nativeName: "Português" },
+  { code: "ru", name: "Russian", nativeName: "Русский" },
+  { code: "ja", name: "Japanese", nativeName: "日本語" },
+  { code: "ko", name: "Korean", nativeName: "한국어" },
+  { code: "zh", name: "Chinese", nativeName: "中文" },
+]
 
 export default function StoryViewerPage() {
   const params = useParams()
@@ -77,6 +91,8 @@ export default function StoryViewerPage() {
   const canGoNext = showCover || currentChapter < story.chapters.length - 1
   const canGoPrev = !showCover
 
+  const currentLanguage = SUPPORTED_LANGUAGES.find((lang) => lang.code === story.language) || SUPPORTED_LANGUAGES[0]
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-red-50">
       <header className="bg-white/90 backdrop-blur-sm shadow-sm border-b">
@@ -91,7 +107,15 @@ export default function StoryViewerPage() {
 
             <div className="flex items-center space-x-4">
               <div className="text-center">
-                <h2 className="font-semibold text-gray-900">{story.title}</h2>
+                <div className="flex items-center gap-2 justify-center mb-1">
+                  <h2 className="font-semibold text-gray-900">{story.title}</h2>
+                  {story.language && story.language !== "en" && (
+                    <Badge variant="outline" className="text-xs">
+                      <Globe className="h-3 w-3 mr-1" />
+                      {currentLanguage.nativeName}
+                    </Badge>
+                  )}
+                </div>
                 <p className="text-sm text-gray-600">
                   {showCover ? "Cover" : `Chapter ${currentChapter + 1} of ${story.chapters.length}`}
                 </p>
@@ -128,6 +152,12 @@ export default function StoryViewerPage() {
                     <Badge variant="secondary" className="bg-white/20 text-white border-white/30">
                       {story.genre}
                     </Badge>
+                    {story.language && story.language !== "en" && (
+                      <Badge variant="secondary" className="bg-white/20 text-white border-white/30 ml-2">
+                        <Globe className="h-3 w-3 mr-1" />
+                        {currentLanguage.name}
+                      </Badge>
+                    )}
                   </div>
                   <div className="text-sm opacity-90 space-y-1">
                     <p>
