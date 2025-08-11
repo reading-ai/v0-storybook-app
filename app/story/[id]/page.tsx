@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation"
 import { ArrowLeft, Plus, BookOpen, ChevronLeft, ChevronRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import ReactMarkdown from "react-markdown"
 import Link from "next/link"
 
 interface Story {
@@ -147,7 +148,7 @@ export default function StoryViewerPage() {
                 </div>
               </div>
             ) : (
-              // Chapter Page
+              // Chapter Page with Markdown Rendering
               <div className="h-full p-8 flex flex-col">
                 <div className="mb-6">
                   <h2 className="text-2xl font-bold text-gray-900 mb-2">{story.chapters[currentChapter]?.title}</h2>
@@ -155,12 +156,39 @@ export default function StoryViewerPage() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto">
-                  <div className="prose prose-lg max-w-none">
-                    {story.chapters[currentChapter]?.content.split("\n").map((paragraph, index) => (
-                      <p key={index} className="mb-4 text-gray-800 leading-relaxed">
-                        {paragraph}
-                      </p>
-                    ))}
+                  <div className="prose prose-gray max-w-none">
+                    <ReactMarkdown
+                      components={{
+                        h1: ({ children }) => (
+                          <h1 className="text-2xl font-bold text-gray-900 mb-4 border-b border-gray-200 pb-2">
+                            {children}
+                          </h1>
+                        ),
+                        h2: ({ children }) => (
+                          <h2 className="text-xl font-semibold text-gray-800 mb-3 mt-6">{children}</h2>
+                        ),
+                        h3: ({ children }) => (
+                          <h3 className="text-lg font-semibold text-gray-800 mb-2 mt-4">{children}</h3>
+                        ),
+                        p: ({ children }) => <p className="text-gray-800 leading-relaxed mb-4 text-base">{children}</p>,
+                        strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
+                        em: ({ children }) => <em className="italic text-gray-700">{children}</em>,
+                        blockquote: ({ children }) => (
+                          <blockquote className="border-l-4 border-purple-300 pl-4 py-2 my-4 bg-purple-50/50 italic text-gray-700">
+                            {children}
+                          </blockquote>
+                        ),
+                        ul: ({ children }) => <ul className="list-disc list-inside mb-4 space-y-1">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal list-inside mb-4 space-y-1">{children}</ol>,
+                        li: ({ children }) => <li className="text-gray-800">{children}</li>,
+                        hr: () => <hr className="my-6 border-gray-300" />,
+                        code: ({ children }) => (
+                          <code className="bg-gray-200 px-2 py-1 rounded text-sm font-mono">{children}</code>
+                        ),
+                      }}
+                    >
+                      {story.chapters[currentChapter]?.content || ""}
+                    </ReactMarkdown>
                   </div>
                 </div>
 

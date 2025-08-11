@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Sparkles, BookOpen, Edit, Wand2, FileText, Zap, Clock } from "lucide-react"
+import { ArrowLeft, Sparkles, BookOpen, Edit, Wand2, FileText, Zap, Clock, Pause, Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import ReactMarkdown from "react-markdown"
 import Link from "next/link"
 
 interface Story {
@@ -38,10 +39,15 @@ export default function ContinueStoryPage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [chapterPrompt, setChapterPrompt] = useState("")
   const [generatedContent, setGeneratedContent] = useState("")
+  const [streamingContent, setStreamingContent] = useState("")
   const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
   const [manualMode, setManualMode] = useState(false)
   const [generationProgress, setGenerationProgress] = useState(0)
   const [wordCount, setWordCount] = useState(0)
+  const [isPreviewMode, setIsPreviewMode] = useState(false)
+  const [isStreamingPaused, setIsStreamingPaused] = useState(false)
+  const [streamingSpeed, setStreamingSpeed] = useState(50) // milliseconds between characters
+  const [abortController, setAbortController] = useState<AbortController | null>(null)
 
   useEffect(() => {
     const savedStories = localStorage.getItem("ai-storybook-stories")
@@ -74,12 +80,13 @@ export default function ContinueStoryPage() {
 
   useEffect(() => {
     // Update word count when content changes
-    const words = generatedContent
+    const content = isGenerating ? streamingContent : generatedContent
+    const words = content
       .trim()
       .split(/\s+/)
       .filter((word) => word.length > 0)
     setWordCount(words.length)
-  }, [generatedContent])
+  }, [generatedContent, streamingContent, isGenerating])
 
   const checkAIStatus = async () => {
     try {
@@ -96,15 +103,13 @@ export default function ContinueStoryPage() {
 
     setIsGenerating(true)
     setGeneratedContent("")
+    setStreamingContent("")
     setGenerationProgress(0)
+    setIsStreamingPaused(false)
 
-    // Simulate progress for better UX
-    const progressInterval = setInterval(() => {
-      setGenerationProgress((prev) => {
-        if (prev >= 90) return prev
-        return prev + Math.random() * 10
-      })
-    }, 500)
+    // Create abort controller for cancellation
+    const controller = new AbortController()
+    setAbortController(controller)
 
     try {
       const nextChapterNum = story.chapters.length + 1
@@ -123,6 +128,7 @@ export default function ContinueStoryPage() {
           chapterNumber: nextChapterNum,
           previousChapters: previousChapters,
         }),
+        signal: controller.signal,
       })
 
       if (!response.ok) {
@@ -137,6 +143,8 @@ export default function ContinueStoryPage() {
         // Handle JSON response (template or regular generation)
         const data = await response.json()
         if (data.content) {
+          // Simulate streaming for non-streaming responses
+          await simulateStreaming(data.content, controller.signal)
           setGeneratedContent(data.content)
           setGenerationProgress(100)
           if (data.message) {
@@ -151,9 +159,11 @@ export default function ContinueStoryPage() {
         const reader = response.body?.getReader()
         if (!reader) throw new Error("No reader available")
 
-        let content = ""
+        let fullContent = ""
         try {
           while (true) {
+            if (controller.signal.aborted) break
+
             const { done, value } = await reader.read()
             if (done) break
 
@@ -165,10 +175,13 @@ export default function ContinueStoryPage() {
                 try {
                   const data = JSON.parse(line.slice(2))
                   if (data.type === "text-delta") {
-                    content += data.textDelta
-                    setGeneratedContent(content)
+                    fullContent += data.textDelta
+
+                    // Stream the content character by character for better UX
+                    await streamContentToUI(data.textDelta, controller.signal)
+
                     // Update progress based on content length
-                    const estimatedProgress = Math.min(90, (content.length / 500) * 90)
+                    const estimatedProgress = Math.min(90, (fullContent.length / 500) * 90)
                     setGenerationProgress(estimatedProgress)
                   }
                 } catch (e) {
@@ -177,57 +190,134 @@ export default function ContinueStoryPage() {
               }
             }
           }
-          setGenerationProgress(100)
+
+          if (!controller.signal.aborted) {
+            setGeneratedContent(fullContent)
+            setGenerationProgress(100)
+          }
         } finally {
           reader.releaseLock()
         }
 
         // If no content was generated from streaming, provide a fallback
-        if (!content.trim()) {
+        if (!fullContent.trim() && !controller.signal.aborted) {
           throw new Error("No content generated from streaming")
         }
       }
     } catch (error) {
+      if (error.name === "AbortError") {
+        console.log("Generation was cancelled by user")
+        return
+      }
+
       console.error("Error generating chapter:", error)
 
       // Provide a helpful fallback chapter
       const nextChapterNum = story.chapters.length + 1
-      const fallbackContent = `Chapter ${nextChapterNum}
+      const fallbackContent = `# Chapter ${nextChapterNum}
 
-The adventure continues for ${story.characters} in the world of ${story.setting}. 
+The adventure continues for **${story.characters}** in the world of *${story.setting}*. 
 
 ${
   nextChapterNum === 1
     ? `This marks the beginning of an exciting ${story.genre.toLowerCase()} story. ${story.characters} find themselves in ${story.setting}, where new adventures await.
 
+## The Journey Begins
+
 The story unfolds as our characters discover the challenges and mysteries that lie ahead. What will happen next in this thrilling tale?`
     : `The story continues from the previous chapter, building upon the adventures of ${story.characters}. 
+
+## New Developments
 
 New developments arise as the plot thickens, and our characters face fresh challenges in their journey through ${story.setting}.`
 }
 
-[This is a template chapter. You can edit this text to write your own content, or try enabling DeepSeek AI features in settings.]`
+---
 
+*This is a template chapter. You can edit this text to write your own content, or try enabling DeepSeek AI features in settings.*`
+
+      await simulateStreaming(fallbackContent, controller.signal)
       setGeneratedContent(fallbackContent)
       setGenerationProgress(100)
     } finally {
-      clearInterval(progressInterval)
       setIsGenerating(false)
+      setAbortController(null)
     }
+  }
+
+  // Simulate streaming for non-streaming responses
+  const simulateStreaming = async (content: string, signal: AbortSignal) => {
+    setStreamingContent("")
+    for (let i = 0; i < content.length; i++) {
+      if (signal.aborted) break
+
+      while (isStreamingPaused && !signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+
+      if (signal.aborted) break
+
+      setStreamingContent(content.substring(0, i + 1))
+      await new Promise((resolve) => setTimeout(resolve, streamingSpeed))
+    }
+  }
+
+  // Stream content character by character for real streaming
+  const streamContentToUI = async (newContent: string, signal: AbortSignal) => {
+    for (let i = 0; i < newContent.length; i++) {
+      if (signal.aborted) break
+
+      while (isStreamingPaused && !signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+
+      if (signal.aborted) break
+
+      setStreamingContent((prev) => prev + newContent[i])
+      await new Promise((resolve) => setTimeout(resolve, streamingSpeed))
+    }
+  }
+
+  const cancelGeneration = () => {
+    if (abortController) {
+      abortController.abort()
+      setIsGenerating(false)
+      setGenerationProgress(0)
+      setStreamingContent("")
+    }
+  }
+
+  const toggleStreamingPause = () => {
+    setIsStreamingPaused(!isStreamingPaused)
   }
 
   const createManualChapter = () => {
     if (!story) return
 
     const nextChapterNum = story.chapters.length + 1
-    const templateContent = `Chapter ${nextChapterNum}
+    const templateContent = `# Chapter ${nextChapterNum}
 
 Write your chapter content here...
 
 ${
   nextChapterNum === 1
-    ? `This is the beginning of your ${story.genre.toLowerCase()} story featuring ${story.characters} in ${story.setting}.`
-    : `Continue your story from where the previous chapter left off.`
+    ? `This is the beginning of your **${story.genre.toLowerCase()}** story featuring *${story.characters}* in ${story.setting}.
+
+## Getting Started
+
+You can use **markdown formatting** to make your story more engaging:
+
+- **Bold text** for emphasis
+- *Italic text* for thoughts or emphasis
+- > Blockquotes for special narration
+- Lists for organizing information
+
+Start writing your amazing story!`
+    : `Continue your story from where the previous chapter left off.
+
+## Chapter ${nextChapterNum}
+
+Use markdown to format your text and make it more engaging for readers.`
 }`
 
     setGeneratedContent(templateContent)
@@ -268,6 +358,7 @@ ${
   }
 
   const estimatedReadTime = Math.ceil(wordCount / 200) // Average reading speed
+  const currentContent = isGenerating ? streamingContent : generatedContent
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
@@ -335,7 +426,7 @@ ${
                 </div>
                 <CardDescription className="text-sm">
                   {aiAvailable
-                    ? "Describe your chapter direction and let AI craft an engaging story for you."
+                    ? "Describe your chapter direction and watch AI craft your story in real-time."
                     : "Create your next chapter manually or enable AI features for automated generation."}
                 </CardDescription>
               </CardHeader>
@@ -355,6 +446,7 @@ ${
                         placeholder="What should happen in this chapter? Be specific about plot points, character development, or scenes you'd like to include..."
                         rows={5}
                         className="resize-none border-purple-200 focus:border-purple-400 focus:ring-purple-400"
+                        disabled={isGenerating}
                       />
                       <div className="text-xs text-gray-500 flex items-center gap-1">
                         <Clock className="h-3 w-3" />
@@ -364,17 +456,41 @@ ${
 
                     {isGenerating && (
                       <div className="space-y-3 p-4 bg-white/50 rounded-lg border border-purple-200">
-                        <div className="flex items-center gap-2 text-sm font-medium text-purple-700">
-                          <Sparkles className="h-4 w-4 animate-spin" />
-                          DeepSeek AI is crafting your chapter...
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-sm font-medium text-purple-700">
+                            <Sparkles className="h-4 w-4 animate-spin" />
+                            DeepSeek AI is writing your story...
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button variant="ghost" size="sm" onClick={toggleStreamingPause} className="h-7 px-2">
+                              {isStreamingPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={cancelGeneration}
+                              className="h-7 px-2 text-red-600 hover:text-red-700"
+                            >
+                              Cancel
+                            </Button>
+                          </div>
                         </div>
                         <Progress value={generationProgress} className="h-2" />
-                        <div className="text-xs text-gray-600">
-                          {generationProgress < 30 && "Analyzing your story context..."}
-                          {generationProgress >= 30 && generationProgress < 60 && "Generating creative content..."}
-                          {generationProgress >= 60 && generationProgress < 90 && "Refining the narrative..."}
-                          {generationProgress >= 90 && "Finalizing your chapter..."}
+                        <div className="flex items-center justify-between text-xs text-gray-600">
+                          <span>
+                            {generationProgress < 30 && "Analyzing story context..."}
+                            {generationProgress >= 30 && generationProgress < 60 && "Generating creative content..."}
+                            {generationProgress >= 60 && generationProgress < 90 && "Refining narrative..."}
+                            {generationProgress >= 90 && "Finalizing chapter..."}
+                          </span>
+                          <span>{wordCount} words</span>
                         </div>
+                        {isStreamingPaused && (
+                          <div className="text-xs text-amber-600 flex items-center gap-1">
+                            <Pause className="h-3 w-3" />
+                            Streaming paused - click play to continue
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -413,6 +529,7 @@ ${
                   <Button
                     onClick={createManualChapter}
                     variant="outline"
+                    disabled={isGenerating}
                     className={`w-full h-12 border-2 border-dashed border-gray-300 hover:border-gray-400 hover:bg-gray-50 ${aiAvailable ? "mt-6" : ""}`}
                     size="lg"
                   >
@@ -420,6 +537,30 @@ ${
                     Write Chapter Manually
                   </Button>
                 </div>
+
+                {/* Streaming Controls */}
+                {isGenerating && (
+                  <div className="p-3 bg-white/70 rounded-lg border border-purple-100">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2">Streaming Controls</h4>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="speed" className="text-xs">
+                        Speed:
+                      </Label>
+                      <input
+                        id="speed"
+                        type="range"
+                        min="10"
+                        max="200"
+                        value={streamingSpeed}
+                        onChange={(e) => setStreamingSpeed(Number(e.target.value))}
+                        className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                      />
+                      <span className="text-xs text-gray-600 w-12">
+                        {streamingSpeed < 50 ? "Fast" : streamingSpeed < 100 ? "Normal" : "Slow"}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Story Context */}
                 <div className="p-4 bg-white/70 rounded-lg border border-purple-100">
@@ -448,7 +589,7 @@ ${
             </Card>
           </div>
 
-          {/* Chapter Content Block - Enhanced */}
+          {/* Chapter Content Block - Enhanced with Streaming */}
           <div className="lg:col-span-3">
             <Card className="shadow-lg border-0 bg-white">
               <CardHeader className="pb-4">
@@ -458,50 +599,172 @@ ${
                       <BookOpen className="h-4 w-4 text-white" />
                     </div>
                     Chapter Content
-                  </CardTitle>
-                  {generatedContent && (
-                    <div className="flex items-center gap-4 text-sm text-gray-500">
-                      <Badge variant="outline" className="text-xs">
-                        {wordCount} words
+                    {isGenerating && (
+                      <Badge variant="secondary" className="bg-blue-100 text-blue-700 border-blue-200 animate-pulse">
+                        <Sparkles className="h-3 w-3 mr-1" />
+                        Live Streaming
                       </Badge>
-                      {wordCount > 0 && (
-                        <Badge variant="outline" className="text-xs">
-                          <Clock className="h-3 w-3 mr-1" />~{estimatedReadTime} min read
-                        </Badge>
-                      )}
-                    </div>
-                  )}
+                    )}
+                  </CardTitle>
+                  <div className="flex items-center gap-2">
+                    {currentContent && (
+                      <>
+                        <div className="flex items-center gap-4 text-sm text-gray-500">
+                          <Badge variant="outline" className="text-xs">
+                            {wordCount} words
+                          </Badge>
+                          {wordCount > 0 && (
+                            <Badge variant="outline" className="text-xs">
+                              <Clock className="h-3 w-3 mr-1" />~{estimatedReadTime} min read
+                            </Badge>
+                          )}
+                        </div>
+                        {!isGenerating && (
+                          <div className="flex rounded-lg border border-gray-200 p-1">
+                            <Button
+                              variant={!isPreviewMode ? "default" : "ghost"}
+                              size="sm"
+                              onClick={() => setIsPreviewMode(false)}
+                              className="h-7 px-3 text-xs"
+                            >
+                              <Edit className="h-3 w-3 mr-1" />
+                              Edit
+                            </Button>
+                            <Button
+                              variant={isPreviewMode ? "default" : "ghost"}
+                              size="sm"
+                              onClick={() => setIsPreviewMode(true)}
+                              className="h-7 px-3 text-xs"
+                            >
+                              <BookOpen className="h-3 w-3 mr-1" />
+                              Preview
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
                 <CardDescription>
-                  {generatedContent
-                    ? "Review and edit your chapter content before saving"
+                  {currentContent
+                    ? isGenerating
+                      ? "Watch your chapter being written in real-time by AI"
+                      : "Review and edit your chapter content before saving. Use markdown for formatting!"
                     : "Your chapter content will appear here once generated or written"}
                 </CardDescription>
               </CardHeader>
 
               <CardContent>
-                {generatedContent ? (
+                {currentContent ? (
                   <div className="space-y-6">
                     <div className="relative">
                       <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl p-6 border-2 border-gray-200 min-h-[400px]">
-                        <Textarea
-                          value={generatedContent}
-                          onChange={(e) => setGeneratedContent(e.target.value)}
-                          className="min-h-[350px] border-none bg-transparent resize-none focus:ring-0 text-gray-800 leading-relaxed text-base"
-                          placeholder="Write your chapter content here..."
-                        />
+                        {(isPreviewMode && !isGenerating) || isGenerating ? (
+                          <div className="prose prose-gray max-w-none">
+                            <ReactMarkdown
+                              components={{
+                                h1: ({ children }) => (
+                                  <h1 className="text-3xl font-bold text-gray-900 mb-6 border-b border-gray-200 pb-2">
+                                    {children}
+                                  </h1>
+                                ),
+                                h2: ({ children }) => (
+                                  <h2 className="text-2xl font-semibold text-gray-800 mb-4 mt-8">{children}</h2>
+                                ),
+                                h3: ({ children }) => (
+                                  <h3 className="text-xl font-semibold text-gray-800 mb-3 mt-6">{children}</h3>
+                                ),
+                                p: ({ children }) => (
+                                  <p className="text-gray-700 leading-relaxed mb-4 text-base">{children}</p>
+                                ),
+                                strong: ({ children }) => (
+                                  <strong className="font-semibold text-gray-900">{children}</strong>
+                                ),
+                                em: ({ children }) => <em className="italic text-gray-800">{children}</em>,
+                                blockquote: ({ children }) => (
+                                  <blockquote className="border-l-4 border-purple-300 pl-4 py-2 my-4 bg-purple-50 italic text-gray-700">
+                                    {children}
+                                  </blockquote>
+                                ),
+                                ul: ({ children }) => (
+                                  <ul className="list-disc list-inside mb-4 space-y-1">{children}</ul>
+                                ),
+                                ol: ({ children }) => (
+                                  <ol className="list-decimal list-inside mb-4 space-y-1">{children}</ol>
+                                ),
+                                li: ({ children }) => <li className="text-gray-700">{children}</li>,
+                                hr: () => <hr className="my-8 border-gray-300" />,
+                                code: ({ children }) => (
+                                  <code className="bg-gray-200 px-2 py-1 rounded text-sm font-mono">{children}</code>
+                                ),
+                              }}
+                            >
+                              {currentContent}
+                            </ReactMarkdown>
+                            {isGenerating && <div className="inline-block w-2 h-5 bg-purple-600 animate-pulse ml-1" />}
+                          </div>
+                        ) : (
+                          <Textarea
+                            value={generatedContent}
+                            onChange={(e) => setGeneratedContent(e.target.value)}
+                            className="min-h-[350px] border-none bg-transparent resize-none focus:ring-0 text-gray-800 leading-relaxed text-base"
+                            placeholder="Write your chapter content here... You can use markdown formatting:
+
+# Chapter Title
+## Section Heading
+**Bold text** for emphasis
+*Italic text* for thoughts
+> Blockquotes for special narration
+
+- Bullet points
+- For lists
+
+---
+
+Horizontal lines for scene breaks"
+                          />
+                        )}
                       </div>
 
                       {/* Writing Stats */}
                       <div className="absolute bottom-2 right-2 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1 text-xs text-gray-500 border">
-                        {wordCount} words • {generatedContent.length} characters
+                        {wordCount} words • {currentContent.length} characters
+                        {isGenerating && <span className="text-green-600 ml-2">● Live</span>}
                       </div>
                     </div>
+
+                    {/* Markdown Help */}
+                    {!isPreviewMode && !isGenerating && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <h4 className="text-sm font-medium text-blue-900 mb-2">💡 Markdown Formatting Tips</h4>
+                        <div className="text-xs text-blue-800 grid grid-cols-2 gap-2">
+                          <div>
+                            <code className="bg-blue-100 px-1 rounded"># Title</code> - Large heading
+                          </div>
+                          <div>
+                            <code className="bg-blue-100 px-1 rounded">**bold**</code> - Bold text
+                          </div>
+                          <div>
+                            <code className="bg-blue-100 px-1 rounded">## Subtitle</code> - Medium heading
+                          </div>
+                          <div>
+                            <code className="bg-blue-100 px-1 rounded">*italic*</code> - Italic text
+                          </div>
+                          <div>
+                            <code className="bg-blue-100 px-1 rounded">&gt; Quote</code> - Blockquote
+                          </div>
+                          <div>
+                            <code className="bg-blue-100 px-1 rounded">---</code> - Horizontal line
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Action Buttons */}
                     <div className="flex gap-3 pt-4 border-t">
                       <Button
                         onClick={saveChapter}
+                        disabled={isGenerating}
                         className="flex-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-lg h-12"
                         size="lg"
                       >
@@ -510,9 +773,12 @@ ${
                       </Button>
                       <Button
                         variant="outline"
+                        disabled={isGenerating}
                         onClick={() => {
                           setGeneratedContent("")
+                          setStreamingContent("")
                           setManualMode(false)
+                          setIsPreviewMode(false)
                         }}
                         className="px-6 h-12 border-2"
                       >
@@ -528,11 +794,17 @@ ${
                       </div>
                     </div>
                     <h3 className="text-lg font-semibold text-gray-900 mb-2">Ready to Create</h3>
-                    <p className="text-gray-600 max-w-md mx-auto">
+                    <p className="text-gray-600 max-w-md mx-auto mb-4">
                       {aiAvailable
-                        ? "Use the AI generator to create your chapter, or write it manually using your own creativity."
+                        ? "Use the AI generator to watch your chapter being written in real-time, or write it manually."
                         : "Click 'Write Chapter Manually' to start creating your next chapter."}
                     </p>
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 max-w-md mx-auto">
+                      <p className="text-sm text-amber-800">
+                        💡 <strong>Pro tip:</strong> Watch the magic happen as AI writes your story live with streaming
+                        generation!
+                      </p>
+                    </div>
                   </div>
                 )}
               </CardContent>
