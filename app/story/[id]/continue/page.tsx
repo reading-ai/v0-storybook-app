@@ -2,14 +2,13 @@
 
 import { useState, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Sparkles, BookOpen, Edit, Wand2, FileText, Zap, Clock, Pause, Play } from "lucide-react"
+import { ArrowLeft, Sparkles, BookOpen, Edit, Wand2, FileText, Zap, Clock, Square } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import ReactMarkdown from "react-markdown"
 import Link from "next/link"
 
@@ -32,6 +31,11 @@ interface Chapter {
   chapterNumber: number
 }
 
+interface StreamingEvent {
+  event: string
+  data: any
+}
+
 export default function ContinueStoryPage() {
   const params = useParams()
   const router = useRouter()
@@ -42,12 +46,15 @@ export default function ContinueStoryPage() {
   const [streamingContent, setStreamingContent] = useState("")
   const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
   const [manualMode, setManualMode] = useState(false)
-  const [generationProgress, setGenerationProgress] = useState(0)
   const [wordCount, setWordCount] = useState(0)
   const [isPreviewMode, setIsPreviewMode] = useState(false)
-  const [isStreamingPaused, setIsStreamingPaused] = useState(false)
-  const [streamingSpeed, setStreamingSpeed] = useState(50) // milliseconds between characters
-  const [abortController, setAbortController] = useState<AbortController | null>(null)
+  const [streamingStatus, setStreamingStatus] = useState<string>("")
+  const [eventSource, setEventSource] = useState<EventSource | null>(null)
+  const [streamingStats, setStreamingStats] = useState({
+    startTime: null as Date | null,
+    wordsPerMinute: 0,
+    estimatedTimeRemaining: 0,
+  })
 
   useEffect(() => {
     const savedStories = localStorage.getItem("ai-storybook-stories")
@@ -76,6 +83,13 @@ export default function ContinueStoryPage() {
 
     // Check AI availability
     checkAIStatus()
+
+    // Cleanup on unmount
+    return () => {
+      if (eventSource) {
+        eventSource.close()
+      }
+    }
   }, [params.id, router])
 
   useEffect(() => {
@@ -86,7 +100,21 @@ export default function ContinueStoryPage() {
       .split(/\s+/)
       .filter((word) => word.length > 0)
     setWordCount(words.length)
-  }, [generatedContent, streamingContent, isGenerating])
+
+    // Calculate streaming stats
+    if (isGenerating && streamingStats.startTime && words.length > 0) {
+      const elapsed = (Date.now() - streamingStats.startTime.getTime()) / 1000 / 60 // minutes
+      const wpm = Math.round(words.length / elapsed)
+      const estimatedTotal = 400 // estimated total words
+      const remaining = Math.max(0, (estimatedTotal - words.length) / Math.max(wpm, 1))
+
+      setStreamingStats((prev) => ({
+        ...prev,
+        wordsPerMinute: wpm,
+        estimatedTimeRemaining: remaining,
+      }))
+    }
+  }, [generatedContent, streamingContent, isGenerating, streamingStats.startTime])
 
   const checkAIStatus = async () => {
     try {
@@ -104,12 +132,12 @@ export default function ContinueStoryPage() {
     setIsGenerating(true)
     setGeneratedContent("")
     setStreamingContent("")
-    setGenerationProgress(0)
-    setIsStreamingPaused(false)
-
-    // Create abort controller for cancellation
-    const controller = new AbortController()
-    setAbortController(controller)
+    setStreamingStatus("Initializing...")
+    setStreamingStats({
+      startTime: new Date(),
+      wordsPerMinute: 0,
+      estimatedTimeRemaining: 0,
+    })
 
     try {
       const nextChapterNum = story.chapters.length + 1
@@ -117,7 +145,27 @@ export default function ContinueStoryPage() {
         .map((ch) => `Chapter ${ch.chapterNumber}: ${ch.content.substring(0, 200)}...`)
         .join("\n")
 
-      const response = await fetch("/api/generate-story", {
+      // Check if AI is available for streaming
+      if (!aiAvailable) {
+        // Fallback to template with simulated streaming
+        const templateContent = generateTemplateChapter(
+          nextChapterNum,
+          story.characters,
+          story.setting,
+          story.genre,
+          chapterPrompt,
+        )
+        await simulateSSEStreaming(templateContent)
+        return
+      }
+
+      // Create SSE connection
+      const eventSourceUrl = new URL("/api/generate-story-stream", window.location.origin)
+      const eventSourceInstance = new EventSource(eventSourceUrl)
+      setEventSource(eventSourceInstance)
+
+      // Send the request data via POST to start streaming
+      fetch("/api/generate-story", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -128,167 +176,212 @@ export default function ContinueStoryPage() {
           chapterNumber: nextChapterNum,
           previousChapters: previousChapters,
         }),
-        signal: controller.signal,
       })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: "Unknown error" }))
-        throw new Error(errorData.error || "Failed to generate chapter")
-      }
-
-      // Check if response is JSON (template/error) or stream
-      const contentType = response.headers.get("content-type")
-
-      if (contentType?.includes("application/json")) {
-        // Handle JSON response (template or regular generation)
-        const data = await response.json()
-        if (data.content) {
-          // Simulate streaming for non-streaming responses
-          await simulateStreaming(data.content, controller.signal)
-          setGeneratedContent(data.content)
-          setGenerationProgress(100)
-          if (data.message) {
-            console.log("Generation message:", data.message)
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error("Failed to start generation")
           }
-        } else {
-          throw new Error(data.error || "Failed to generate chapter")
-        }
-      } else {
-        // Handle streaming response
-        console.log("Processing streaming response...")
-        const reader = response.body?.getReader()
-        if (!reader) throw new Error("No reader available")
+          return response.body
+        })
+        .then((body) => {
+          if (!body) throw new Error("No response body")
 
-        let fullContent = ""
-        try {
-          while (true) {
-            if (controller.signal.aborted) break
+          const reader = body.getReader()
+          const decoder = new TextDecoder()
 
-            const { done, value } = await reader.read()
-            if (done) break
+          const processStream = async () => {
+            try {
+              while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
 
-            const chunk = new TextDecoder().decode(value)
-            const lines = chunk.split("\n")
+                const chunk = decoder.decode(value, { stream: true })
+                const lines = chunk.split("\n")
 
-            for (const line of lines) {
-              if (line.startsWith("0:")) {
-                try {
-                  const data = JSON.parse(line.slice(2))
-                  if (data.type === "text-delta") {
-                    fullContent += data.textDelta
-
-                    // Stream the content character by character for better UX
-                    await streamContentToUI(data.textDelta, controller.signal)
-
-                    // Update progress based on content length
-                    const estimatedProgress = Math.min(90, (fullContent.length / 500) * 90)
-                    setGenerationProgress(estimatedProgress)
+                for (const line of lines) {
+                  if (line.startsWith("event:")) {
+                    const event = line.substring(6).trim()
+                    continue
                   }
-                } catch (e) {
-                  // Ignore parsing errors for individual chunks
+
+                  if (line.startsWith("data:")) {
+                    const data = line.substring(5).trim()
+                    if (data) {
+                      try {
+                        const parsed = JSON.parse(data)
+                        handleSSEEvent(event || "text", parsed)
+                      } catch (e) {
+                        console.warn("Failed to parse SSE data:", data)
+                      }
+                    }
+                  }
                 }
               }
+            } catch (error) {
+              console.error("Stream processing error:", error)
+              handleSSEError(error)
             }
           }
 
-          if (!controller.signal.aborted) {
-            setGeneratedContent(fullContent)
-            setGenerationProgress(100)
-          }
-        } finally {
-          reader.releaseLock()
-        }
-
-        // If no content was generated from streaming, provide a fallback
-        if (!fullContent.trim() && !controller.signal.aborted) {
-          throw new Error("No content generated from streaming")
-        }
-      }
+          processStream()
+        })
+        .catch((error) => {
+          console.error("Generation request failed:", error)
+          handleSSEError(error)
+        })
     } catch (error) {
-      if (error.name === "AbortError") {
-        console.log("Generation was cancelled by user")
-        return
-      }
+      console.error("Error starting chapter generation:", error)
+      handleSSEError(error)
+    }
+  }
 
-      console.error("Error generating chapter:", error)
+  const handleSSEEvent = (event: string, data: any) => {
+    switch (event) {
+      case "connected":
+        setStreamingStatus("Connected to AI service...")
+        break
 
-      // Provide a helpful fallback chapter
+      case "start":
+        setStreamingStatus("AI is analyzing your story context...")
+        break
+
+      case "text":
+        setStreamingContent(data.fullContent || "")
+        setWordCount(data.wordCount || 0)
+        setStreamingStatus(`Generating chapter... ${data.wordCount || 0} words`)
+        break
+
+      case "complete":
+        setGeneratedContent(data.fullContent || "")
+        setStreamingContent("")
+        setStreamingStatus("Chapter generation complete!")
+        setIsGenerating(false)
+        if (eventSource) {
+          eventSource.close()
+          setEventSource(null)
+        }
+        break
+
+      case "error":
+        console.error("SSE Error:", data.error)
+        if (data.fallback) {
+          setGeneratedContent(data.fallback)
+          setStreamingContent("")
+        }
+        setStreamingStatus("Error occurred, using fallback content")
+        setIsGenerating(false)
+        if (eventSource) {
+          eventSource.close()
+          setEventSource(null)
+        }
+        break
+    }
+  }
+
+  const handleSSEError = async (error: any) => {
+    console.error("SSE connection error:", error)
+
+    // Fallback to template
+    if (story) {
       const nextChapterNum = story.chapters.length + 1
-      const fallbackContent = `# Chapter ${nextChapterNum}
-
-The adventure continues for **${story.characters}** in the world of *${story.setting}*. 
-
-${
-  nextChapterNum === 1
-    ? `This marks the beginning of an exciting ${story.genre.toLowerCase()} story. ${story.characters} find themselves in ${story.setting}, where new adventures await.
-
-## The Journey Begins
-
-The story unfolds as our characters discover the challenges and mysteries that lie ahead. What will happen next in this thrilling tale?`
-    : `The story continues from the previous chapter, building upon the adventures of ${story.characters}. 
-
-## New Developments
-
-New developments arise as the plot thickens, and our characters face fresh challenges in their journey through ${story.setting}.`
-}
-
----
-
-*This is a template chapter. You can edit this text to write your own content, or try enabling DeepSeek AI features in settings.*`
-
-      await simulateStreaming(fallbackContent, controller.signal)
-      setGeneratedContent(fallbackContent)
-      setGenerationProgress(100)
-    } finally {
-      setIsGenerating(false)
-      setAbortController(null)
+      const templateContent = generateTemplateChapter(
+        nextChapterNum,
+        story.characters,
+        story.setting,
+        story.genre,
+        chapterPrompt,
+      )
+      await simulateSSEStreaming(templateContent)
     }
   }
 
-  // Simulate streaming for non-streaming responses
-  const simulateStreaming = async (content: string, signal: AbortSignal) => {
+  // Simulate SSE streaming for fallback content
+  const simulateSSEStreaming = async (content: string) => {
+    setStreamingStatus("Using template generation...")
     setStreamingContent("")
-    for (let i = 0; i < content.length; i++) {
-      if (signal.aborted) break
 
-      while (isStreamingPaused && !signal.aborted) {
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
+    const words = content.split(" ")
+    let currentContent = ""
 
-      if (signal.aborted) break
+    for (let i = 0; i < words.length; i++) {
+      currentContent += (i > 0 ? " " : "") + words[i]
+      setStreamingContent(currentContent)
+      setStreamingStatus(`Generating template... ${i + 1}/${words.length} words`)
 
-      setStreamingContent(content.substring(0, i + 1))
-      await new Promise((resolve) => setTimeout(resolve, streamingSpeed))
+      // Simulate realistic typing speed
+      await new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 100))
     }
-  }
 
-  // Stream content character by character for real streaming
-  const streamContentToUI = async (newContent: string, signal: AbortSignal) => {
-    for (let i = 0; i < newContent.length; i++) {
-      if (signal.aborted) break
-
-      while (isStreamingPaused && !signal.aborted) {
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-
-      if (signal.aborted) break
-
-      setStreamingContent((prev) => prev + newContent[i])
-      await new Promise((resolve) => setTimeout(resolve, streamingSpeed))
-    }
+    setGeneratedContent(content)
+    setStreamingContent("")
+    setStreamingStatus("Template generation complete!")
+    setIsGenerating(false)
   }
 
   const cancelGeneration = () => {
-    if (abortController) {
-      abortController.abort()
-      setIsGenerating(false)
-      setGenerationProgress(0)
-      setStreamingContent("")
+    if (eventSource) {
+      eventSource.close()
+      setEventSource(null)
     }
+    setIsGenerating(false)
+    setStreamingContent("")
+    setStreamingStatus("")
   }
 
-  const toggleStreamingPause = () => {
-    setIsStreamingPaused(!isStreamingPaused)
+  const generateTemplateChapter = (
+    chapterNumber: number,
+    characters: string,
+    setting: string,
+    genre: string,
+    prompt?: string,
+  ): string => {
+    const isFirstChapter = chapterNumber === 1
+
+    if (isFirstChapter) {
+      return `# Chapter ${chapterNumber}: The Beginning
+
+**${characters}** stood at the threshold of *${setting}*, their hearts racing with anticipation. This was the moment that would change everything - the beginning of their extraordinary ${genre.toLowerCase()} adventure.
+
+## The Journey Begins
+
+The air around them seemed charged with possibility. Every shadow held mystery, every sound carried the promise of discovery. They had heard stories about this place, whispered tales that spoke of wonders and dangers in equal measure.
+
+> "Are you ready for this?" one of them asked, their voice barely audible above the ambient sounds of ${setting}.
+
+The others exchanged glances, each seeing their own mixture of excitement and apprehension reflected in their companions' eyes. They had come too far to turn back now.
+
+**"We've prepared for this moment our entire lives,"** came the determined reply. **"Whatever lies ahead, we'll face it together."**
+
+As they took their first steps forward, the very air seemed to shimmer with magic and possibility. Their ${genre.toLowerCase()} journey was about to begin, and none of them could imagine where it would lead.
+
+${prompt ? `\n### Story Direction\n*${prompt}*` : ""}
+
+---
+
+*This is a template chapter. Edit this content to match your vision, or enable DeepSeek AI in settings for automated generation.*`
+    } else {
+      return `# Chapter ${chapterNumber}: The Adventure Continues
+
+The journey of **${characters}** through *${setting}* had taken unexpected turns, each more thrilling than the last. What had begun as a simple quest had evolved into something far more complex and meaningful.
+
+## New Developments
+
+${prompt ? `Following their current path - *${prompt.toLowerCase()}* - they found themselves` : "They found themselves"} facing challenges that tested not only their skills but their very understanding of the world around them.
+
+The ${genre.toLowerCase()} elements of their story continued to unfold in surprising ways. Ancient mysteries revealed themselves slowly, relationships deepened through shared trials, and the true scope of their adventure became clearer with each passing day.
+
+> "Look how far we've come," one of them said, pausing to gaze back at the path they had traveled.
+
+> "And yet," another replied thoughtfully, "I have the feeling our greatest challenges still lie ahead."
+
+The wind carried whispers of distant places and untold stories, reminding them that their adventure was far from over. Each step forward brought new revelations, new allies, and new mysteries to unravel.
+
+${prompt ? `\n### Story Direction\n*${prompt}*` : ""}
+
+---
+
+*This is a template chapter. Edit this content to match your vision, or enable DeepSeek AI in settings for automated generation.*`
+    }
   }
 
   const createManualChapter = () => {
@@ -395,7 +488,7 @@ Use markdown to format your text and make it more engaging for readers.`
         )}
 
         <div className="grid gap-8 lg:grid-cols-5">
-          {/* AI Generation Block - Enhanced */}
+          {/* AI Generation Block */}
           <div className="lg:col-span-2">
             <Card className="h-fit shadow-lg border-0 bg-gradient-to-br from-purple-50 to-indigo-50">
               <CardHeader className="pb-4">
@@ -459,36 +552,28 @@ Use markdown to format your text and make it more engaging for readers.`
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2 text-sm font-medium text-purple-700">
                             <Sparkles className="h-4 w-4 animate-spin" />
-                            DeepSeek AI is writing your story...
+                            DeepSeek AI is writing...
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Button variant="ghost" size="sm" onClick={toggleStreamingPause} className="h-7 px-2">
-                              {isStreamingPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={cancelGeneration}
-                              className="h-7 px-2 text-red-600 hover:text-red-700"
-                            >
-                              Cancel
-                            </Button>
-                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={cancelGeneration}
+                            className="h-7 px-2 text-red-600 hover:text-red-700"
+                          >
+                            <Square className="h-3 w-3 mr-1" />
+                            Stop
+                          </Button>
                         </div>
-                        <Progress value={generationProgress} className="h-2" />
-                        <div className="flex items-center justify-between text-xs text-gray-600">
-                          <span>
-                            {generationProgress < 30 && "Analyzing story context..."}
-                            {generationProgress >= 30 && generationProgress < 60 && "Generating creative content..."}
-                            {generationProgress >= 60 && generationProgress < 90 && "Refining narrative..."}
-                            {generationProgress >= 90 && "Finalizing chapter..."}
-                          </span>
-                          <span>{wordCount} words</span>
+                        <div className="text-xs text-gray-600">
+                          <span>{streamingStatus}</span>
+                          <span className="float-right">{wordCount} words</span>
                         </div>
-                        {isStreamingPaused && (
-                          <div className="text-xs text-amber-600 flex items-center gap-1">
-                            <Pause className="h-3 w-3" />
-                            Streaming paused - click play to continue
+
+                        {/* Streaming Stats */}
+                        {streamingStats.wordsPerMinute > 0 && (
+                          <div className="grid grid-cols-2 gap-2 text-xs text-gray-500">
+                            <div>Speed: {streamingStats.wordsPerMinute} WPM</div>
+                            <div>ETA: {Math.round(streamingStats.estimatedTimeRemaining)}m</div>
                           </div>
                         )}
                       </div>
@@ -538,30 +623,6 @@ Use markdown to format your text and make it more engaging for readers.`
                   </Button>
                 </div>
 
-                {/* Streaming Controls */}
-                {isGenerating && (
-                  <div className="p-3 bg-white/70 rounded-lg border border-purple-100">
-                    <h4 className="text-sm font-medium text-gray-900 mb-2">Streaming Controls</h4>
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="speed" className="text-xs">
-                        Speed:
-                      </Label>
-                      <input
-                        id="speed"
-                        type="range"
-                        min="10"
-                        max="200"
-                        value={streamingSpeed}
-                        onChange={(e) => setStreamingSpeed(Number(e.target.value))}
-                        className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                      />
-                      <span className="text-xs text-gray-600 w-12">
-                        {streamingSpeed < 50 ? "Fast" : streamingSpeed < 100 ? "Normal" : "Slow"}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
                 {/* Story Context */}
                 <div className="p-4 bg-white/70 rounded-lg border border-purple-100">
                   <h4 className="text-sm font-medium text-gray-900 mb-2">Story Context</h4>
@@ -589,7 +650,7 @@ Use markdown to format your text and make it more engaging for readers.`
             </Card>
           </div>
 
-          {/* Chapter Content Block - Enhanced with Streaming */}
+          {/* Chapter Content Block */}
           <div className="lg:col-span-3">
             <Card className="shadow-lg border-0 bg-white">
               <CardHeader className="pb-4">
@@ -599,12 +660,6 @@ Use markdown to format your text and make it more engaging for readers.`
                       <BookOpen className="h-4 w-4 text-white" />
                     </div>
                     Chapter Content
-                    {isGenerating && (
-                      <Badge variant="secondary" className="bg-blue-100 text-blue-700 border-blue-200 animate-pulse">
-                        <Sparkles className="h-3 w-3 mr-1" />
-                        Live Streaming
-                      </Badge>
-                    )}
                   </CardTitle>
                   <div className="flex items-center gap-2">
                     {currentContent && (
@@ -796,13 +851,12 @@ Horizontal lines for scene breaks"
                     <h3 className="text-lg font-semibold text-gray-900 mb-2">Ready to Create</h3>
                     <p className="text-gray-600 max-w-md mx-auto mb-4">
                       {aiAvailable
-                        ? "Use the AI generator to watch your chapter being written in real-time, or write it manually."
+                        ? "Use the AI generator to watch your chapter being written in real-time."
                         : "Click 'Write Chapter Manually' to start creating your next chapter."}
                     </p>
                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 max-w-md mx-auto">
                       <p className="text-sm text-amber-800">
-                        💡 <strong>Pro tip:</strong> Watch the magic happen as AI writes your story live with streaming
-                        generation!
+                        💡 <strong>Pro tip:</strong> Experience real-time streaming as your story comes to life!
                       </p>
                     </div>
                   </div>
