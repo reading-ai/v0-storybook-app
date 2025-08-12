@@ -15,30 +15,44 @@ interface Story {
   setting: string
   theme: string
   chapters: Chapter[]
-  createdAt: string
-  coverColor: string
+  created_at: string
+  cover_color: string
 }
 
 interface Chapter {
   id: string
   title: string
   content: string
-  chapterNumber: number
+  chapter_number: number
 }
 
 export default function HomePage() {
   const [stories, setStories] = useState<Story[]>([])
   const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const savedStories = localStorage.getItem("ai-storybook-stories")
-    if (savedStories) {
-      setStories(JSON.parse(savedStories))
-    }
-
-    // Check AI availability
+    loadStoriesFromDatabase()
     checkAIStatus()
   }, [])
+
+  const loadStoriesFromDatabase = async () => {
+    try {
+      const response = await fetch("/api/stories")
+      if (response.ok) {
+        const storiesData = await response.json()
+        setStories(storiesData)
+      }
+    } catch (error) {
+      console.error("Error loading stories:", error)
+      const savedStories = localStorage.getItem("ai-storybook-stories")
+      if (savedStories) {
+        setStories(JSON.parse(savedStories))
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const checkAIStatus = async () => {
     try {
@@ -108,7 +122,14 @@ export default function HomePage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {stories.length === 0 ? (
+        {loading ? (
+          <div className="text-center py-16">
+            <div className="inline-flex p-4 bg-gradient-to-br from-purple-100 to-pink-100 rounded-full mb-4">
+              <Library className="h-16 w-16 text-purple-600 animate-pulse" />
+            </div>
+            <p className="text-xl text-gray-600">Loading your stories...</p>
+          </div>
+        ) : stories.length === 0 ? (
           <div className="text-center py-16">
             <div className="mb-8">
               <div className="inline-flex p-4 bg-gradient-to-br from-purple-100 to-pink-100 rounded-full mb-4">
@@ -157,7 +178,7 @@ export default function HomePage() {
                   key={story.id}
                   className="group hover:shadow-xl py-0 transition-all duration-300 transform hover:-translate-y-1 overflow-hidden"
                 >
-                  <div className={`h-48 bg-gradient-to-br ${story.coverColor} relative`}>
+                  <div className={`h-48 bg-gradient-to-br ${story.cover_color} relative`}>
                     <div className="absolute inset-0 bg-black/20" />
                     <div className="absolute bottom-4 left-4 right-4">
                       <h3 className="text-white font-bold text-lg leading-tight line-clamp-2">{story.title}</h3>

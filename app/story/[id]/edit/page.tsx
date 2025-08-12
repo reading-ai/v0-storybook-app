@@ -13,74 +13,186 @@ import Link from "next/link"
 interface Story {
   id: string
   title: string
-  description: string
-  content: string
   genre: string
+  characters: string
+  setting: string
+  theme: string
+  chapters: Chapter[]
   createdAt: string
-  updatedAt: string
+  coverColor: string
+  language?: string
+}
+
+interface Chapter {
+  id: string
+  title: string
+  content: string
+  chapterNumber: number
 }
 
 export default function EditStoryPage() {
   const params = useParams()
   const router = useRouter()
   const [story, setStory] = useState<Story | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [editedStory, setEditedStory] = useState({
     title: "",
-    description: "",
-    content: "",
     genre: "",
+    characters: "",
+    setting: "",
+    theme: "",
   })
 
   useEffect(() => {
-    const savedStories = localStorage.getItem("my-storybook-stories")
-    if (savedStories) {
-      const stories: Story[] = JSON.parse(savedStories)
-      const foundStory = stories.find((s) => s.id === params.id)
-      if (foundStory) {
-        setStory(foundStory)
-        setEditedStory({
-          title: foundStory.title,
-          description: foundStory.description,
-          content: foundStory.content,
-          genre: foundStory.genre,
-        })
-      } else {
-        router.push("/")
+    const loadStory = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+
+        const response = await fetch(`/api/stories/${params.id}`)
+        if (response.ok) {
+          const storyData = await response.json()
+          setStory(storyData)
+          setEditedStory({
+            title: storyData.title,
+            genre: storyData.genre,
+            characters: storyData.characters,
+            setting: storyData.setting,
+            theme: storyData.theme || "",
+          })
+        } else if (response.status === 404) {
+          // Fallback to localStorage if not found in database
+          const savedStories = localStorage.getItem("ai-storybook-stories")
+          if (savedStories) {
+            const stories: Story[] = JSON.parse(savedStories)
+            const foundStory = stories.find((s) => s.id === params.id)
+            if (foundStory) {
+              setStory(foundStory)
+              setEditedStory({
+                title: foundStory.title,
+                genre: foundStory.genre,
+                characters: foundStory.characters,
+                setting: foundStory.setting,
+                theme: foundStory.theme || "",
+              })
+            } else {
+              setError("Story not found")
+              router.push("/")
+            }
+          } else {
+            setError("Story not found")
+            router.push("/")
+          }
+        } else {
+          throw new Error("Failed to load story")
+        }
+      } catch (err) {
+        console.error("Error loading story:", err)
+        // Fallback to localStorage on error
+        const savedStories = localStorage.getItem("ai-storybook-stories")
+        if (savedStories) {
+          const stories: Story[] = JSON.parse(savedStories)
+          const foundStory = stories.find((s) => s.id === params.id)
+          if (foundStory) {
+            setStory(foundStory)
+            setEditedStory({
+              title: foundStory.title,
+              genre: foundStory.genre,
+              characters: foundStory.characters,
+              setting: foundStory.setting,
+              theme: foundStory.theme || "",
+            })
+          } else {
+            setError("Story not found")
+            router.push("/")
+          }
+        } else {
+          setError("Failed to load story")
+          router.push("/")
+        }
+      } finally {
+        setLoading(false)
       }
-    } else {
-      router.push("/")
+    }
+
+    if (params.id) {
+      loadStory()
     }
   }, [params.id, router])
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!story || !editedStory.title.trim()) return
 
-    const savedStories = localStorage.getItem("my-storybook-stories")
-    if (savedStories) {
-      const stories: Story[] = JSON.parse(savedStories)
-      const updatedStories = stories.map((s) =>
-        s.id === story.id
-          ? {
-              ...s,
-              title: editedStory.title,
-              description: editedStory.description,
-              content: editedStory.content,
-              genre: editedStory.genre || "General",
-              updatedAt: new Date().toISOString().split("T")[0],
-            }
-          : s,
-      )
-      localStorage.setItem("my-storybook-stories", JSON.stringify(updatedStories))
-      router.push(`/story/${story.id}`)
+    try {
+      setSaving(true)
+      setError(null)
+
+      const response = await fetch(`/api/stories/${story.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: editedStory.title,
+          genre: editedStory.genre || "General",
+          characters: editedStory.characters,
+          setting: editedStory.setting,
+          theme: editedStory.theme,
+        }),
+      })
+
+      if (response.ok) {
+        router.push(`/story/${story.id}`)
+      } else {
+        throw new Error("Failed to save to database")
+      }
+    } catch (err) {
+      console.error("Error saving story:", err)
+      // Fallback to localStorage on error
+      const savedStories = localStorage.getItem("ai-storybook-stories")
+      if (savedStories) {
+        const stories: Story[] = JSON.parse(savedStories)
+        const updatedStories = stories.map((s) =>
+          s.id === story.id
+            ? {
+                ...s,
+                title: editedStory.title,
+                genre: editedStory.genre || "General",
+                characters: editedStory.characters,
+                setting: editedStory.setting,
+                theme: editedStory.theme,
+              }
+            : s,
+        )
+        localStorage.setItem("ai-storybook-stories", JSON.stringify(updatedStories))
+        router.push(`/story/${story.id}`)
+      } else {
+        setError("Failed to save story")
+      }
+    } finally {
+      setSaving(false)
     }
   }
 
-  if (!story) {
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-4"></div>
+          <div>Loading story...</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (error || !story) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
         <div className="text-center">
           <h2 className="text-2xl font-semibold text-gray-900 mb-2">Story not found</h2>
-          <p className="text-gray-600 mb-4">The story you're trying to edit doesn't exist.</p>
+          <p className="text-gray-600 mb-4">{error || "The story you're trying to edit doesn't exist."}</p>
           <Link href="/">
             <Button>Return Home</Button>
           </Link>
@@ -100,9 +212,9 @@ export default function EditStoryPage() {
                 Back to Story
               </Button>
             </Link>
-            <Button onClick={handleSave} className="bg-purple-600 hover:bg-purple-700">
+            <Button onClick={handleSave} disabled={saving} className="bg-purple-600 hover:bg-purple-700">
               <Save className="h-4 w-4 mr-2" />
-              Save Changes
+              {saving ? "Saving..." : "Save Changes"}
             </Button>
           </div>
         </div>
@@ -112,9 +224,15 @@ export default function EditStoryPage() {
         <Card>
           <CardHeader>
             <CardTitle>Edit Story</CardTitle>
-            <CardDescription>Make changes to your story. All changes are saved locally.</CardDescription>
+            <CardDescription>Make changes to your story details. Changes are saved to the database.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-md p-4">
+                <p className="text-red-600 text-sm">{error}</p>
+              </div>
+            )}
+
             <div className="grid gap-2">
               <Label htmlFor="title">Title</Label>
               <Input
@@ -136,25 +254,35 @@ export default function EditStoryPage() {
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="description">Description</Label>
+              <Label htmlFor="characters">Characters</Label>
               <Textarea
-                id="description"
-                value={editedStory.description}
-                onChange={(e) => setEditedStory({ ...editedStory, description: e.target.value })}
-                placeholder="Brief description of your story..."
+                id="characters"
+                value={editedStory.characters}
+                onChange={(e) => setEditedStory({ ...editedStory, characters: e.target.value })}
+                placeholder="Main characters in your story..."
                 rows={3}
               />
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="content">Story Content</Label>
+              <Label htmlFor="setting">Setting</Label>
               <Textarea
-                id="content"
-                value={editedStory.content}
-                onChange={(e) => setEditedStory({ ...editedStory, content: e.target.value })}
-                placeholder="Write your story..."
-                rows={15}
-                className="font-mono"
+                id="setting"
+                value={editedStory.setting}
+                onChange={(e) => setEditedStory({ ...editedStory, setting: e.target.value })}
+                placeholder="Where and when your story takes place..."
+                rows={3}
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="theme">Theme (Optional)</Label>
+              <Textarea
+                id="theme"
+                value={editedStory.theme}
+                onChange={(e) => setEditedStory({ ...editedStory, theme: e.target.value })}
+                placeholder="Central theme or message of your story..."
+                rows={3}
               />
             </div>
           </CardContent>

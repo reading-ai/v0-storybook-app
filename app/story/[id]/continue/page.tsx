@@ -54,47 +54,95 @@ export default function ContinueStoryPage() {
   const params = useParams()
   const router = useRouter()
   const [story, setStory] = useState<Story | null>(null)
-  const [isGenerating, setIsGenerating] = useState(false)
   const [chapterPrompt, setChapterPrompt] = useState("")
   const [generatedContent, setGeneratedContent] = useState("")
-  const [streamingContent, setStreamingContent] = useState("")
-  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
-  const [manualMode, setManualMode] = useState(false)
-  const [wordCount, setWordCount] = useState(0)
-  const [isPreviewMode, setIsPreviewMode] = useState(false)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [isAiAvailable, setIsAiAvailable] = useState(false)
   const [streamingStatus, setStreamingStatus] = useState<string>("")
   const [eventSource, setEventSource] = useState<EventSource | null>(null)
   const [selectedLanguage, setSelectedLanguage] = useState("en")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [streamingContent, setStreamingContent] = useState("") // Declare streamingContent
 
   useEffect(() => {
-    const savedStories = localStorage.getItem("ai-storybook-stories")
-    let foundStory: Story | null = null
-    if (savedStories) {
-      const stories: Story[] = JSON.parse(savedStories)
-      foundStory = stories.find((s) => s.id === params.id)
-      if (foundStory) {
-        setStory(foundStory)
-        // Set default prompt for next chapter
-        const nextChapterNum = foundStory.chapters.length + 1
-        if (nextChapterNum === 1) {
-          setChapterPrompt(
-            `Begin the story by introducing ${foundStory.characters} in ${foundStory.setting}. Set up the main conflict or adventure.`,
-          )
+    const loadStory = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+
+        const response = await fetch(`/api/stories/${params.id}`)
+        if (response.ok) {
+          const storyData = await response.json()
+          setStory(storyData)
+          setupChapterPrompt(storyData)
+          if (storyData.language) {
+            setSelectedLanguage(storyData.language)
+          }
+        } else if (response.status === 404) {
+          // Fallback to localStorage if not found in database
+          const savedStories = localStorage.getItem("ai-storybook-stories")
+          if (savedStories) {
+            const stories: Story[] = JSON.parse(savedStories)
+            const foundStory = stories.find((s) => s.id === params.id)
+            if (foundStory) {
+              setStory(foundStory)
+              setupChapterPrompt(foundStory)
+              if (foundStory.language) {
+                setSelectedLanguage(foundStory.language)
+              }
+            } else {
+              setError("Story not found")
+              router.push("/")
+            }
+          } else {
+            setError("Story not found")
+            router.push("/")
+          }
         } else {
-          setChapterPrompt(
-            `Continue the story from where chapter ${foundStory.chapters.length} left off. Advance the plot and develop the characters further.`,
-          )
+          throw new Error("Failed to load story")
         }
-      } else {
-        router.push("/")
+      } catch (err) {
+        console.error("Error loading story:", err)
+        // Fallback to localStorage on error
+        const savedStories = localStorage.getItem("ai-storybook-stories")
+        if (savedStories) {
+          const stories: Story[] = JSON.parse(savedStories)
+          const foundStory = stories.find((s) => s.id === params.id)
+          if (foundStory) {
+            setStory(foundStory)
+            setupChapterPrompt(foundStory)
+            if (foundStory.language) {
+              setSelectedLanguage(foundStory.language)
+            }
+          } else {
+            setError("Story not found")
+            router.push("/")
+          }
+        } else {
+          setError("Failed to load story")
+          router.push("/")
+        }
+      } finally {
+        setLoading(false)
       }
-    } else {
-      router.push("/")
     }
 
-    // Load language from story
-    if (foundStory && foundStory.language) {
-      setSelectedLanguage(foundStory.language)
+    const setupChapterPrompt = (foundStory: Story) => {
+      const nextChapterNum = foundStory.chapters.length + 1
+      if (nextChapterNum === 1) {
+        setChapterPrompt(
+          `Begin the story by introducing ${foundStory.characters} in ${foundStory.setting}. Set up the main conflict or adventure.`,
+        )
+      } else {
+        setChapterPrompt(
+          `Continue the story from where chapter ${foundStory.chapters.length} left off. Advance the plot and develop the characters further.`,
+        )
+      }
+    }
+
+    if (params.id) {
+      loadStory()
     }
 
     // Check AI availability
@@ -122,9 +170,9 @@ export default function ContinueStoryPage() {
     try {
       const response = await fetch("/api/check-ai-status")
       const data = await response.json()
-      setAiAvailable(data.aiAvailable)
+      setIsAiAvailable(data.aiAvailable)
     } catch (error) {
-      setAiAvailable(false)
+      setIsAiAvailable(false)
     }
   }
 
@@ -143,7 +191,7 @@ export default function ContinueStoryPage() {
         .join("\n")
 
       // Check if AI is available for streaming
-      if (!aiAvailable) {
+      if (!isAiAvailable) {
         // Fallback to template with simulated streaming
         const templateContent = generateTemplateChapter(
           nextChapterNum,
@@ -446,7 +494,7 @@ Use markdown to format your text and make it more engaging for readers.`
     setManualMode(true)
   }
 
-  const saveChapter = () => {
+  const saveChapter = async () => {
     if (!story || !generatedContent.trim()) return
 
     const newChapter: Chapter = {
@@ -454,6 +502,30 @@ Use markdown to format your text and make it more engaging for readers.`
       title: `Chapter ${story.chapters.length + 1}`,
       content: generatedContent,
       chapterNumber: story.chapters.length + 1,
+    }
+
+    try {
+      const response = await fetch(`/api/stories/${story.id}/chapters`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: newChapter.id,
+          story_id: story.id,
+          title: newChapter.title,
+          content: newChapter.content,
+          chapter_number: newChapter.chapterNumber,
+        }),
+      })
+
+      if (response.ok) {
+        console.log("Chapter saved to database successfully")
+        router.push(`/story/${story.id}`)
+        return
+      } else {
+        console.warn("Failed to save chapter to database, using localStorage fallback")
+      }
+    } catch (dbError) {
+      console.warn("Database save failed, using localStorage fallback:", dbError)
     }
 
     const updatedStory = {
@@ -471,10 +543,25 @@ Use markdown to format your text and make it more engaging for readers.`
     router.push(`/story/${story.id}`)
   }
 
-  if (!story) {
+  const [wordCount, setWordCount] = useState(0)
+  const [isPreviewMode, setIsPreviewMode] = useState(false)
+  const [manualMode, setManualMode] = useState(false)
+
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center">
         <div className="text-center">Loading...</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="font-semibold text-gray-900">Error</h2>
+          <p className="text-sm text-gray-600">{error}</p>
+        </div>
       </div>
     )
   }
@@ -504,7 +591,7 @@ Use markdown to format your text and make it more engaging for readers.`
       </header>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {!aiAvailable && (
+        {!isAiAvailable && (
           <Alert className="mb-6">
             <Sparkles className="h-4 w-4" />
             <AlertDescription>
@@ -524,7 +611,7 @@ Use markdown to format your text and make it more engaging for readers.`
               <CardHeader className="pb-4">
                 <div className="flex items-center justify-between">
                   <CardTitle className="flex items-center gap-2 text-lg">
-                    {aiAvailable ? (
+                    {isAiAvailable ? (
                       <>
                         <div className="p-2 bg-gradient-to-br from-purple-500 to-indigo-500 rounded-lg">
                           <Wand2 className="h-4 w-4 text-white" />
@@ -541,7 +628,7 @@ Use markdown to format your text and make it more engaging for readers.`
                     )}
                   </CardTitle>
                   <div className="flex items-center gap-2">
-                    {aiAvailable && (
+                    {isAiAvailable && (
                       <Badge variant="secondary" className="bg-green-100 text-green-700 border-green-200">
                         <Zap className="h-3 w-3 mr-1" />
                         DeepSeek AI
@@ -556,14 +643,14 @@ Use markdown to format your text and make it more engaging for readers.`
                   </div>
                 </div>
                 <CardDescription className="text-sm">
-                  {aiAvailable
+                  {isAiAvailable
                     ? `Generate chapters in ${currentLanguage?.name || "English"} for this story.`
                     : "Create your next chapter manually or enable AI features for automated generation."}
                 </CardDescription>
               </CardHeader>
 
               <CardContent className="space-y-6">
-                {aiAvailable && (
+                {isAiAvailable && (
                   <>
                     <div className="space-y-3">
                       <Label htmlFor="prompt" className="text-sm font-medium flex items-center gap-2">
@@ -630,7 +717,7 @@ Use markdown to format your text and make it more engaging for readers.`
                 )}
 
                 <div className="relative">
-                  {aiAvailable && (
+                  {isAiAvailable && (
                     <>
                       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-gray-300 to-transparent" />
                       <div className="absolute inset-x-0 top-0 flex justify-center">
@@ -644,7 +731,7 @@ Use markdown to format your text and make it more engaging for readers.`
                     onClick={createManualChapter}
                     variant="outline"
                     disabled={isGenerating}
-                    className={`w-full h-12 border-2 border-dashed border-gray-300 hover:border-gray-400 hover:bg-gray-50 ${aiAvailable ? "mt-6" : ""}`}
+                    className={`w-full h-12 border-2 border-dashed border-gray-300 hover:border-gray-400 hover:bg-gray-50 ${isAiAvailable ? "mt-6" : ""}`}
                     size="lg"
                   >
                     <Edit className="h-5 w-5 mr-2" />
@@ -882,7 +969,7 @@ Horizontal lines for scene breaks"
                     </div>
                     <h3 className="text-lg font-semibold text-gray-900 mb-2">Ready to Create</h3>
                     <p className="text-gray-600 max-w-md mx-auto mb-4">
-                      {aiAvailable
+                      {isAiAvailable
                         ? `Use the AI generator to create stories in ${currentLanguage?.name || "English"}.`
                         : "Click 'Write Chapter Manually' to start creating your next chapter."}
                     </p>
