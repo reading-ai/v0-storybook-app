@@ -47,32 +47,96 @@ export default function StoryViewerPage() {
   const [story, setStory] = useState<Story | null>(null)
   const [currentChapter, setCurrentChapter] = useState(0)
   const [showCover, setShowCover] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const savedStories = localStorage.getItem("ai-storybook-stories")
-    if (savedStories) {
-      const stories: Story[] = JSON.parse(savedStories)
-      const foundStory = stories.find((s) => s.id === params.id)
-      if (foundStory) {
-        setStory(foundStory)
-      } else {
-        router.push("/")
+    const loadStory = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+
+        // Try to load from database first
+        const response = await fetch(`/api/stories/${params.id}`)
+        if (response.ok) {
+          const storyData = await response.json()
+          setStory(storyData)
+        } else if (response.status === 404) {
+          // Fallback to localStorage if not found in database
+          const savedStories = localStorage.getItem("ai-storybook-stories")
+          if (savedStories) {
+            const stories: Story[] = JSON.parse(savedStories)
+            const foundStory = stories.find((s) => s.id === params.id)
+            if (foundStory) {
+              setStory(foundStory)
+            } else {
+              setError("Story not found")
+              router.push("/")
+            }
+          } else {
+            setError("Story not found")
+            router.push("/")
+          }
+        } else {
+          throw new Error("Failed to load story")
+        }
+      } catch (err) {
+        console.error("Error loading story:", err)
+        // Fallback to localStorage on error
+        const savedStories = localStorage.getItem("ai-storybook-stories")
+        if (savedStories) {
+          const stories: Story[] = JSON.parse(savedStories)
+          const foundStory = stories.find((s) => s.id === params.id)
+          if (foundStory) {
+            setStory(foundStory)
+          } else {
+            setError("Story not found")
+            router.push("/")
+          }
+        } else {
+          setError("Failed to load story")
+          router.push("/")
+        }
+      } finally {
+        setLoading(false)
       }
-    } else {
-      router.push("/")
+    }
+
+    if (params.id) {
+      loadStory()
     }
   }, [params.id, router])
 
-  if (!story) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center">
-        <div className="text-center">Loading...</div>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-4"></div>
+          <div>Loading story...</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (error || !story) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-red-600 mb-4">{error || "Story not found"}</div>
+          <Link href="/">
+            <Button>Return to Library</Button>
+          </Link>
+        </div>
       </div>
     )
   }
 
   const nextChapter = () => {
     if (showCover) {
+      if (story.chapters.length === 0) {
+        router.push(`/story/${story.id}/continue`)
+        return
+      }
       setShowCover(false)
       setCurrentChapter(0)
     } else if (currentChapter < story.chapters.length - 1) {
@@ -88,7 +152,7 @@ export default function StoryViewerPage() {
     }
   }
 
-  const canGoNext = showCover || currentChapter < story.chapters.length - 1
+  const canGoNext = showCover ? story.chapters.length > 0 : currentChapter < story.chapters.length - 1
   const canGoPrev = !showCover
 
   const currentLanguage = SUPPORTED_LANGUAGES.find((lang) => lang.code === story.language) || SUPPORTED_LANGUAGES[0]
@@ -173,7 +237,12 @@ export default function StoryViewerPage() {
                     )}
                   </div>
                   <div className="mt-8">
-                    <p className="text-lg opacity-90">{story.chapters.length} Chapters</p>
+                    <p className="text-lg opacity-90">
+                      {story.chapters.length === 0 ? "No chapters yet" : `${story.chapters.length} Chapters`}
+                    </p>
+                    {story.chapters.length === 0 && (
+                      <p className="text-sm opacity-75 mt-2">Click "Add Chapter" or "Next" to start writing</p>
+                    )}
                   </div>
                 </div>
               </div>

@@ -123,7 +123,32 @@ export default function CreateStoryPage() {
         language: selectedLanguage, // Store the selected language
       }
 
-      // Save to localStorage
+      try {
+        const response = await fetch("/api/stories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: newStory.id,
+            title: newStory.title,
+            genre: newStory.genre,
+            characters: newStory.characters,
+            setting: newStory.setting,
+            theme: newStory.theme,
+            cover_color: newStory.coverColor,
+            language: newStory.language,
+          }),
+        })
+
+        if (response.ok) {
+          console.log("Story saved to database successfully")
+        } else {
+          console.warn("Failed to save story to database, using localStorage fallback")
+        }
+      } catch (dbError) {
+        console.warn("Database save failed, using localStorage fallback:", dbError)
+      }
+
+      // Save to localStorage as fallback
       const savedStories = localStorage.getItem("ai-storybook-stories")
       const stories = savedStories ? JSON.parse(savedStories) : []
       const updatedStories = [newStory, ...stories]
