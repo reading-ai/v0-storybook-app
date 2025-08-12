@@ -16,7 +16,7 @@ interface Story {
   theme: string
   chapters: Chapter[]
   created_at: string
-  cover_color: string
+  coverColor: string
 }
 
 interface Chapter {
@@ -178,7 +178,7 @@ export default function HomePage() {
                   key={story.id}
                   className="group hover:shadow-xl py-0 transition-all duration-300 transform hover:-translate-y-1 overflow-hidden"
                 >
-                  <div className={`h-48 bg-gradient-to-br ${story.cover_color} relative`}>
+                  <div className={`h-48 bg-gradient-to-br ${story.coverColor} relative`}>
                     <div className="absolute inset-0 bg-black/20" />
                     <div className="absolute bottom-4 left-4 right-4">
                       <h3 className="text-white font-bold text-lg leading-tight line-clamp-2">{story.title}</h3>
