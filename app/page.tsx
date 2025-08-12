@@ -155,7 +155,7 @@ export default function HomePage() {
               {stories.map((story) => (
                 <Card
                   key={story.id}
-                  className="group hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 overflow-hidden"
+                  className="group hover:shadow-xl py-0 transition-all duration-300 transform hover:-translate-y-1 overflow-hidden"
                 >
                   <div className={`h-48 bg-gradient-to-br ${story.coverColor} relative`}>
                     <div className="absolute inset-0 bg-black/20" />
